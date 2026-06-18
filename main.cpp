@@ -16,13 +16,22 @@
 
 using namespace std;
 
+// データ型のマクロ切り替え
 #ifdef USE_FLOAT
-    #define TYPE float
+    using TYPE = float;
+#elif USE_DOUBLE
+    using TYPE = double;
+#elif USE_Q8
+    using TYPE = uint8_t;
+    using SCALE_TYPE = flaot;
 #else
-    #define TYPE double
+    using TYPE = double;
 #endif
 
 
+
+
+// 一番大きい要素のインデックスを取得
 template <typename T>
 size_t argMax(const vector<T>& vec){
     size_t idx = 0;
@@ -50,6 +59,7 @@ vector<string> split(const string text, const char delimiter){
     return columns;
 }
 
+// ランダムベクトルの作成
 vector<TYPE> generateRandomVector(int n, int random_state){
     mt19937 mt(random_state);
     uniform_real_distribution<TYPE> dist((TYPE)0.0, (TYPE)1.0);
@@ -60,14 +70,16 @@ vector<TYPE> generateRandomVector(int n, int random_state){
     return out;
 }
 
-void createDataset(string filePath, 
-                   vector<pair<vector<int>, int>>& dataset, 
-                   map<string, int>& wordToId, 
+// データセットの作成
+void createDataset(string filePath, // ファイルパス
+                   vector<pair<vector<int>, int>>& dataset, // データセットを保存する配列
+                   map<string, int>& wordToId, //　文字列　→　ID
                    vector<vector<TYPE>>& wordVectors,
                    map<string, int>& labelToId,
                    vector<vector<TYPE>>& labelVectors,
                    vector<string>& idToLabel,
-                   int vectorSize = 1000) {
+                   int vectorSize = 1000 // ワードに固定長のベクトルを割り当てる用
+                ) {
 
     if (!filesystem::exists(filePath)){
         cerr << "ファイルが存在しません: " << filePath << endl;
@@ -82,12 +94,14 @@ void createDataset(string filePath,
     int wordIdCounter = 0;
     int labelIdCounter = 0;
 
-    while (getline(file, line)){
+    while (getline(file, line)){// line = "label word1 word2 ..."
         vector<string> rows = split(line, ' ');
         if (rows.empty()) continue;
 
         // ラベルの処理
         string labelStr = rows[0];
+        // 連想配列labelToId　(key, value) = (label, ID) 
+        // 連想配列に要素がない場合の追加処理
         if (labelToId.find(labelStr) == labelToId.end()){
             labelToId[labelStr] = labelIdCounter++;
             idToLabel.push_back(labelStr); // IDからラベル名に戻す用
@@ -95,14 +109,18 @@ void createDataset(string filePath,
         int labelId = labelToId[labelStr];
 
         vector<int> articleWordIds;
+        //rows[1]..rows[N-1] = word1..wordN-1
         for (int i = 1; i < rows.size(); i++){
             string wordStr = rows[i];
-            
+            // wordToId (Key, value) = (word, ID)
             if (wordToId.find(wordStr) == wordToId.end()){
                 wordToId[wordStr] = wordIdCounter++;
-                
+                // ワードごとに異なる密ベクトルを割り当てる
+                // word -> hash -> randomVector(hash)
                 vector<TYPE> vec(vectorSize, (TYPE)0.0);
+                // ワード文字列からハッシュ値を計算
                 size_t hashValue = hasher(wordStr);
+                // ハッシュ値に基づいたシード設定
                 mt19937 mt(hashValue);
                 uniform_real_distribution<TYPE> dist((TYPE)-1.0, (TYPE)1.0);
 
@@ -118,6 +136,7 @@ void createDataset(string filePath,
     }
 
     // ラベルのOne-hotベクトルの作成
+    // ラベル数に応じたベクトルを作成，
     labelVectors.assign(labelIdCounter, vector<TYPE>(labelIdCounter, (TYPE)0.0));
     for (int i = 0; i < labelIdCounter; i++){
         labelVectors[i][i] = (TYPE)1.0;
@@ -132,7 +151,9 @@ int step(TYPE x, TYPE boarder = (TYPE)0.0){
     }
 }
 
+
 struct Matrix{
+    bool quantized_weight = false;
     int col, row;
     vector<TYPE> data;
     Matrix(int col, int row, const vector<TYPE>& vec) : col(col), row(row){
@@ -169,7 +190,7 @@ Matrix mulMat(const Matrix& a, const Matrix& b){
 };
 
 struct Perceptron{
-    int nIter;
+    int epochSize;
     TYPE eta; 
     int randomState;
     int classSize;
@@ -177,8 +198,8 @@ struct Perceptron{
     Matrix w_;
 
     // 
-    Perceptron(int nIter=50, TYPE eta=(TYPE)0.1, int classSize=2, int randomState=1) 
-        : nIter(nIter), eta(eta), randomState(randomState), classSize(classSize){};
+    Perceptron(int epochSize=50, TYPE eta=(TYPE)0.1, int classSize=2, int randomState=1) 
+        : epochSize(epochSize), eta(eta), randomState(randomState), classSize(classSize){};
 
     void init_weight(int col, int row, int n){
         w_.col = col;
@@ -225,14 +246,15 @@ struct Perceptron{
     }
 
     void fit(const vector<pair<vector<int>, int>>& dataset, const vector<vector<TYPE>>& wordVectors, const vector<vector<TYPE>>& labelVectors){
-        for (int i = 0; i < nIter; i++){
+        for (int i = 0; i < epochSize; i++){
             for (const auto& data : dataset){
                 const vector<int>& articleWordIds = data.first;
                 int labelId = data.second;
 
                 vector<TYPE> docVec(1000, (TYPE)0.0);
                 int validWordCount = 0;
-
+                
+                //記事内の単語ベクトルを足し合わせて，記事ベクトルを作成
                 for (int wordId : articleWordIds){
                     const vector<TYPE>& wordVec = wordVectors[wordId];
                     for (int k = 0; k < 1000; k++){
@@ -256,7 +278,6 @@ struct Perceptron{
         }
     }
 
-    // --- 高速化：テスト時も文字検索を最小限にする ---
     void test(string testFilePath, const map<string, int>& trainWordToId, const vector<vector<TYPE>>& wordVectors, const map<string, int>& labelToId, const vector<string>& idToLabel){
         if (!filesystem::exists(testFilePath)){
             cerr << "ファイルが存在しません" << endl;
@@ -273,6 +294,8 @@ struct Perceptron{
         vector<int> answerCount(numClasses, 0);
         vector<int> correctCount(numClasses, 0);
 
+
+        // テストファイルの1行あたりの処理
         while (getline(file, line)){
             vector<string> rows = split(line, ' ');
             if (rows.empty()) continue;
@@ -284,7 +307,7 @@ struct Perceptron{
             labelCount[trueLabelId]++;
 
             vector<TYPE> docVec(1000, (TYPE)0.0); 
-            int validWordCount = 0;
+            int validWordCount = 0; //連想配列wordToIdに登録されているものがあったときのカウント
             
             for (int i = 1; i < rows.size(); i++){
                 string wordStr = rows[i];
